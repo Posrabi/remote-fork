@@ -40,6 +40,10 @@ static void single_step(pid_t child);
 
 static size_t try_to_find_syscall(pid_t child, size_t addr);
 
+static char* const get_map_name(procmaps_struct* map);
+
+static off_t min(off_t a, off_t b);
+
 /* ---------- Replicating Linux's memory mappings ---------- */
 
 static size_t remote_brk(pid_t child, __uint64_t sysCall, size_t brk);
@@ -51,6 +55,8 @@ static void stream_memory(pid_t child, FILE* in, size_t addr, size_t length);
 static procmaps_struct* find_map_named(procmaps_iterator* maps, char* name);
 
 static void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr);
+
+
 
 /* ---------- Definitions ---------- */
 

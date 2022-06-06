@@ -19,6 +19,8 @@ enum ForkLocation {
   Child = 2,
 };
 
+/* ---------- Structs ---------- */
+
 typedef struct Result {
   enum ForkLocation loc;
   int raise_result;
@@ -91,9 +93,5 @@ void yoyo(char* addr);
 
 /*A hacky way to throw an error and stops the entire program.*/
 int raise_error(char* msg);
-
-char* const get_map_name(procmaps_struct* map);
-
-off_t min(off_t a, off_t b);
 
 #endif // REMOTE_FORK_H
