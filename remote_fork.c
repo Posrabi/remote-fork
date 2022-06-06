@@ -12,73 +12,47 @@
 #include <sys/uio.h>
 #include <sys/user.h>
 #include <sys/syscall.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <pmparser.h>
-#include <remote_fork.h>
 
+#include "pmparser.h"
+#include "remote_fork.h"
 
-enum ForkLocation {
-  Parent = 1,
-  Child = 2,
-};
+/* ---------- Static functions declarations ---------- */
 
-typedef struct Result {
-  enum ForkLocation loc;
-  int raise_result;
-  pid_t pid;
-} Result;
+static BytesArray from_reg_info_to_bytes(RegInfo* ri);
+static RegInfo* from_bytes_to_reg_info(BytesArray* ba);
 
-typedef struct ProcessState {
-  size_t brk_address; 
-} ProcessState;
+static int _prot(Mapping* m);
 
-enum CommandType {
-  PROCESS_STATE = 1,
-  MAPPING = 2,
-  REMAP = 3,
-  RESUME_WITH_REGISTERS = 4,
-};
+static Result const fork_frozen();
 
-typedef struct Command {
-  enum CommandType type;
-  union cmds {
-    ProcessState ps;
-    Mapping mp;
-    Remap rm;
-    ResumeWithRegisters rwr;
-  } cmds;
-} Command;
+/*Kill the child process if the parent dies.*/
+static int const kill_if_parent_dies();
 
-typedef struct Mapping {
-  char* name;
-  bool readable;
-  bool writable;
-  bool executable;
-  size_t addr;
-  off_t size;
-} Mapping;
+static bool const is_special_kernel_map(procmaps_struct* map);
+static bool const forced_transfer_kernel_map(procmaps_struct* map);
+static bool const should_skip_map(procmaps_struct* map);
 
-typedef struct Remap {
-  char* name;
-  size_t addr;
-  off_t size;
-} Remap;
+static void write_special_kernel_map(FILE* out, procmaps_struct* map);
+static void write_regular_map(FILE* out, pid_t child, procmaps_struct* map);
+static void write_state(FILE* out, pid_t child, ProcessState proc_state);
 
-typedef struct ResumeWithRegisters {
-  size_t length;
-} ResumeWithRegisters;
+static void single_step(pid_t child);
 
+static size_t try_to_find_syscall(pid_t child, size_t addr);
 
-typedef struct RegInfo {
-  struct user_regs_struct regs;
-} RegInfo;
+/* ---------- Replicating Linux's memory mappings ---------- */
 
+static size_t remote_brk(pid_t child, __uint64_t sysCall, size_t brk);
+static size_t remote_mmap_anon(pid_t child, __uint64_t sysCall, size_t addr, size_t length, int32_t prot);
+static void remote_munmap(pid_t child, __uint64_t sysCall, size_t addr, size_t length);
+static void remote_mremap(pid_t child, __uint64_t sysCall, size_t addr, size_t length, size_t new_addr);
+static void stream_memory(pid_t child, FILE* in, size_t addr, size_t length);
 
-typedef struct BytesArray {
-  unsigned char* pointer;
-  size_t size;
-} BytesArray;
+static procmaps_struct* find_map_named(procmaps_iterator* maps, char* name);
+
+static void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr);
+
+/* ---------- Definitions ---------- */
 
 BytesArray from_reg_info_to_bytes(RegInfo* ri) {
   BytesArray ba = {
@@ -680,21 +654,3 @@ off_t min(off_t a, off_t b) {
   return a;
 }
 
-int connect_to_tcp_server(char* server_addr) {
-  int sock = socket(PF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
-    raise_error("unable to create socket");
-  }
-  
-  unsigned short port = 8081;
-  struct sockaddr_in server;
-  server.sin_addr.s_addr = inet_addr(server_addr);
-  server.sin_family = AF_INET;
-  server.sin_port = htons(port);
-
-  if (connect(sock, (struct sockaddr*) &server, sizeof(server)) < 0) {
-    raise_error("unable to connect to server");
-  }
-
-  return sock;
-}

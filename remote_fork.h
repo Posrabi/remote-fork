@@ -1,9 +1,10 @@
+#ifndef REMOTE_FORK_H
+#define REMOTE_FORK_H
+
 #include <stdio.h>
 #include <pmparser.h>
 #include <stdbool.h>
-
-#ifndef REMOTE_FORK_H
-#define REMOTE_FORK_H
+#include <sys/user.h>
 
 /* ---------- DEFINITIONS ---------- */
 
@@ -13,78 +14,71 @@
 
 /* ---------- ENUMS ---------- */
 
-/*Where is the process.*/
-enum ForkLocation;
+enum ForkLocation {
+  Parent = 1,
+  Child = 2,
+};
 
-/*Enum to help with deserializing commands.*/
-enum CommandType;
+typedef struct Result {
+  enum ForkLocation loc;
+  int raise_result;
+  pid_t pid;
+} Result;
 
-/* ---------- Structs ---------- */
+typedef struct ProcessState {
+  size_t brk_address; 
+} ProcessState;
 
-/*Generic struct with fork locations, pid and raise_result*/
-typedef struct Result;
+enum CommandType {
+  PROCESS_STATE = 1,
+  MAPPING = 2,
+  REMAP = 3,
+  RESUME_WITH_REGISTERS = 4,
+};
 
-/*Current state*/
-typedef struct ProcessState;
+typedef struct Command {
+  enum CommandType type;
+  union cmds {
+    ProcessState ps;
+    Mapping mp;
+    Remap rm;
+    ResumeWithRegisters rwr;
+  } cmds;
+} Command;
 
-/*Representing memory mappings.*/
-typedef struct Mapping;
+typedef struct Mapping {
+  char* name;
+  bool readable;
+  bool writable;
+  bool executable;
+  size_t addr;
+  off_t size;
+} Mapping;
 
-typedef struct Remap;
+typedef struct Remap {
+  char* name;
+  size_t addr;
+  off_t size;
+} Remap;
 
-typedef struct ResumeWithRegisters;
+typedef struct ResumeWithRegisters {
+  size_t length;
+} ResumeWithRegisters;
 
-/*Generic bytes array with head pointer and length.*/
-typedef struct BytesArray;
-BytesArray from_reg_info_to_bytes(RegInfo* ri);
 
-/*Struct containing user_regs_struct*/
-typedef struct RegInfo;
-/*Create RegInfo from BytesArray, need to free when done using.*/
-RegInfo* from_bytes_to_reg_info(BytesArray* ba);
+typedef struct RegInfo {
+  struct user_regs_struct regs;
+} RegInfo;
 
-int _prot(Mapping* m);
+
+typedef struct BytesArray {
+  unsigned char* pointer;
+  size_t size;
+} BytesArray;
 
 /* ---------- Main functions ---------- */
 
 Result const remote_fork(FILE* out);
-
-Result const fork_frozen();
-
-/*Kill the child process if the parent dies.*/
-int const kill_if_parent_dies();
-
-bool const is_special_kernel_map(procmaps_struct* map);
-
-bool const forced_transfer_kernel_map(procmaps_struct* map);
-
-bool const should_skip_map(procmaps_struct* map);
-
-void write_special_kernel_map(FILE* out, procmaps_struct* map);
-
-void write_regular_map(FILE* out, pid_t child, procmaps_struct* map);
-
-void write_state(FILE* out, pid_t child, ProcessState proc_state);
-
-void single_step(pid_t child);
-
-size_t try_to_find_syscall(pid_t child, size_t addr);
-
-/* ---------- Replicating Linux's memory mappings ---------- */
-
-size_t remote_brk(pid_t child, __uint64_t sysCall, size_t brk);
-
-size_t remote_mmap_anon(pid_t child, __uint64_t sysCall, size_t addr, size_t length, int32_t prot);
-
-void remote_munmap(pid_t child, __uint64_t sysCall, size_t addr, size_t length);
-
-void remote_mremap(pid_t child, __uint64_t sysCall, size_t addr, size_t length, size_t new_addr);
-
-void stream_memory(pid_t child, FILE* in, size_t addr, size_t length);
-
-procmaps_struct* find_map_named(procmaps_iterator* maps, char* name);
-
-void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr);
 
 pid_t receive_fork(FILE* in, __int32_t pass_to_child);
 
@@ -101,7 +95,5 @@ int raise_error(char* msg);
 char* const get_map_name(procmaps_struct* map);
 
 off_t min(off_t a, off_t b);
-
-int connect_to_tcp_server(char* server_addr);
 
 #endif // REMOTE_FORK_H
