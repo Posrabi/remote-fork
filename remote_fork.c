@@ -17,8 +17,6 @@
 #include <pmparser.h>
 #include <remote_fork.h>
 
-off_t const SYS_PAGE_SIZE = 4096;
-bool const FORCED_VDSO_TRANSFER = false;
 
 enum ForkLocation {
   Parent = 1,
@@ -648,6 +646,8 @@ void yoyo(char* addr) {
 
   pid_t child = receive_fork(f_recv, 0);
   int status = wait_for_exit(child);
+  fclose(f_recv);
+  close(stream);
   exit(status);
 }
 

@@ -1,8 +1,15 @@
 #include <stdio.h>
 #include <pmparser.h>
+#include <stdbool.h>
 
 #ifndef REMOTE_FORK_H
 #define REMOTE_FORK_H
+
+/* ---------- DEFINITIONS ---------- */
+
+#define SYS_PAGE_SIZE 4096
+
+#define FORCED_VDSO_TRANSFER false
 
 /* ---------- ENUMS ---------- */
 
