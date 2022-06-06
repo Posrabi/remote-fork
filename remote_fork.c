@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <pmparser.h>
+#include <remote_fork.h>
 
 off_t const SYS_PAGE_SIZE = 4096;
 bool const FORCED_VDSO_TRANSFER = false;
@@ -43,10 +44,12 @@ enum CommandType {
 
 typedef struct Command {
   enum CommandType type;
-  ProcessState* ps;
-  Mapping* mp;
-  Remap* rm;
-  ResumeWithRegisters* rwr;
+  union cmds {
+    ProcessState ps;
+    Mapping mp;
+    Remap rm;
+    ResumeWithRegisters rwr;
+  } cmds;
 } Command;
 
 typedef struct Mapping {
@@ -79,25 +82,27 @@ typedef struct BytesArray {
   size_t size;
 } BytesArray;
 
-BytesArray fromRegInfoToBytes(RegInfo* ri) {
+BytesArray from_reg_info_to_bytes(RegInfo* ri) {
   BytesArray ba = {
-    .pointer = ri,
-    .size = sizeof(*ri)
+    .pointer = &(ri->regs),
+    .size = sizeof(ri->regs)
   };
   return ba;
 }
 
-RegInfo* fromBytesToRegInfo(BytesArray* ba) {
-  if (ba->size < sizeof(RegInfo)) {
+RegInfo* from_bytes_to_reg_info(BytesArray* ba) {
+  if (ba->size < sizeof(struct user_regs_struct)) {
     return NULL;
   }
   
   // if ((*(ba->pointer)) % ba->size != 0) {
   //   return NULL;
   // }
-  RegInfo ri;
-  mempcpy(&ri, ba->pointer, sizeof(RegInfo));
-  return &ri;
+  RegInfo* ri;
+  ri = malloc(sizeof(RegInfo));
+
+  mempcpy(&(ri->regs), ba->pointer, ba->size);
+  return ri;
 }
 
 int _prot(Mapping* m) {
@@ -155,8 +160,6 @@ Result const fork_frozen() {
   }
 };
 
-
-/*Kill the child process if the parent dies.*/
 int const kill_if_parent_dies() {
   return prctl(PR_SET_PDEATHSIG, SIGKILL);
 }
@@ -201,11 +204,13 @@ void write_special_kernel_map(FILE* out, procmaps_struct* map) {
     .size = map->length
   };
   Command cmd = {
-    .rm = &remap_cmd,
     .type = REMAP,
+    .cmds = {
+      .rm = remap_cmd,
+    }
   };
 
-  if (fwrite(&cmd, sizeof(cmd), 1, out) == 0) {
+  if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
     raise_error("unable to write special kernel map");
   };
 }
@@ -220,11 +225,13 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
     .size = map->length,
   };
   Command cmd = {
-    .mp = &mapping,
     .type = MAPPING,
+    .cmds = {
+      .mp = mapping,
+    }
   };
 
-  if (fwrite(&cmd, sizeof(cmd), 1, out) == 0) {
+  if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
     raise_error("unable to write regular map");
   }
 
@@ -258,10 +265,12 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
 
 void write_state(FILE* out, pid_t child, ProcessState proc_state) {
   Command cmd = {
-    .ps = &proc_state,
     .type = PROCESS_STATE,
+    .cmds = {
+      .ps = proc_state,
+    }
   };
-  if (fwrite(&cmd, sizeof(cmd), 1, out) == 0) {
+  if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
     raise_error("error writing process state");
   }
 
@@ -291,8 +300,21 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
     .regs = regs
   };
 
-  BytesArray rb = fromRegInfoToBytes(&ri);
-  if (fwrite(rb.pointer, rb.size, 1, out) == 0) {
+  BytesArray rb = from_reg_info_to_bytes(&ri);
+  Command cmd = {
+    .type = RESUME_WITH_REGISTERS,
+    .cmds = {
+      .rwr = {
+        .length = sizeof(struct user_regs_struct),
+      }
+    }
+  };
+
+  if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
+    raise_error("error writing registers command");
+  }
+  
+  if (fwrite(&rb, sizeof(RegInfo), 1, out) == 0) {
     raise_error("error writing registers");
   }
 }
@@ -498,6 +520,9 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
 
   procmaps_iterator* orig_maps = pmparser_parse(child);
   procmaps_struct* vdso_map = find_map_named(orig_maps, "[vdso]");
+  if (vdso_map == NULL) {
+    raise_error("unable to find vdso map");
+  }
   
   size_t vsdo_syscall_offset = try_to_find_syscall(child, vdso_map->addr_start);
   __uint64_t vdso_syscall = vdso_map->addr_start + vsdo_syscall_offset;
@@ -509,11 +534,11 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
     }
     remote_munmap(child, vdso_syscall, map_tmp->addr_start, map_tmp->length);
   }
+
   pmparser_free(orig_maps);
 
   procmaps_iterator* maps = pmparser_parse(child);
   __uint8_t prot_all = PROT_READ | PROT_WRITE | PROT_EXEC;
-  char* current = in->_IO_read_ptr;
   Command cmd;
   for (;;) {
     if (fread(&cmd, sizeof(Command), 1, in) == 0) {
@@ -522,17 +547,17 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
 
     switch (cmd.type) {
       case PROCESS_STATE:
-        restore_brk(child, vdso_syscall, cmd.ps->brk_address);
+        restore_brk(child, vdso_syscall, cmd.cmds.ps.brk_address);
 
       case REMAP:
-        procmaps_struct* matching_map = find_map_named(maps, cmd.rm->name);
+        procmaps_struct* matching_map = find_map_named(maps, cmd.cmds.rm.name);
         if (matching_map == NULL) {
           printf("%s\n", "no matching map to remap");
           continue;
         }
         
 
-        if (cmd.rm->size != matching_map->length) {
+        if (cmd.cmds.rm.size != matching_map->length) {
           printf("%s\n", "size mismatch in remap");
         }
 
@@ -541,39 +566,46 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
           vdso_syscall,
           matching_map->addr_start,
           matching_map->addr_end,
-          cmd.rm->addr
+          cmd.cmds.rm.addr
         );
 
-        if (strcmp(cmd.rm->name, "[vdso]") == 0) {
-          vdso_syscall = (__uint64_t)(cmd.rm->addr + vsdo_syscall_offset);
+        if (strcmp(cmd.cmds.rm.name, "[vdso]") == 0) {
+          vdso_syscall = (__uint64_t)(cmd.cmds.rm.addr + vsdo_syscall_offset);
         }
         break;
 
       case MAPPING:
-        if (cmd.mp->addr == NULL) {
+        if (cmd.cmds.mp.addr == NULL) {
           raise_error("null string");
         }
 
-        size_t addr = remote_mmap_anon(child, vdso_syscall, cmd.mp->addr, cmd.mp->size, prot_all);
-        stream_memory(child, in, addr, cmd.mp->size);
+        size_t addr = remote_mmap_anon(child, vdso_syscall, cmd.cmds.mp.addr, cmd.cmds.mp.size, prot_all);
+        stream_memory(child, in, addr, cmd.cmds.mp.size);
         break;
 
       case RESUME_WITH_REGISTERS:
-        char* reg_bytes = calloc(sizeof(__uint8_t), cmd.rwr->length);
-        fread(reg_bytes, cmd.rwr->length, 1, in);
+        char* reg_bytes = calloc(sizeof(__uint8_t), cmd.cmds.rwr.length);
+        fread(reg_bytes, cmd.cmds.rwr.length, 1, in);
 
         BytesArray ba = {
           .pointer = reg_bytes,
-          .size = cmd.rwr->length
+          .size = cmd.cmds.rwr.length
         };
-        RegInfo reg_info = *fromBytesToRegInfo(&ba);
+        RegInfo* reg_info = from_bytes_to_reg_info(&ba);
+        if (reg_info == NULL) {
+          raise_error("unable to deserialize reg_info");
+        }
 
-        reg_info.regs.rax = (__uint64_t) pass_to_child;
-        ptrace(PTRACE_SETREGS, child, 0, &(reg_info.regs));
+        reg_info->regs.rax = (__uint64_t) pass_to_child;
+        ptrace(PTRACE_SETREGS, child, 0, &(reg_info->regs));
+
+        free(reg_info);
+        free(reg_bytes);
         break;
     }
   }
 
+  pmparser_free(maps);
   ptrace(PTRACE_DETACH, child, 0, 0);
   return child;
 }
@@ -588,12 +620,37 @@ __int32_t wait_for_exit(pid_t child) {
 }
 
 void yoyo(char* addr) {
+  int stream = connect_to_tcp_server(addr);
+  FILE* f_send = fdopen(dup(stream), "wb");
+  FILE* f_recv = fdopen(dup(stream), "rb");
+  Result res = remote_fork(f_send);
   
+  switch (res.loc) {
+    case Child:
+      FILE* child_send = fdopen(res.pid, "wb");
+
+      // do some work here
+
+      Result child_res = remote_fork(child_send);
+      fclose(child_send);
+
+      switch (child_res.loc) {
+        case Child:
+          return;
+        case Parent:
+          exit(0);
+      }      
+      break;
+    case Parent:
+      fclose(f_send);
+      break;
+  }
+
+  pid_t child = receive_fork(f_recv, 0);
+  int status = wait_for_exit(child);
+  exit(status);
 }
 
-/* ---------- UTILS ---------- */
-
-/*A hacky way to throw an error and stops the entire program.*/
 int raise_error(char* msg) {
   void* array[10];
   char** strings;
@@ -623,11 +680,21 @@ off_t min(off_t a, off_t b) {
   return a;
 }
 
-void connectToSocket(char* server_addr) {
-  int soc = socket(AF_INET, SOCK_STREAM, 0);
-  int port = 8081;
-  struct sockaddr_in addr;
-  addr.sin_addr.s_addr = inet_addr(server_addr);
-  addr.sin_family = AF_INET;
-  addr.sin_port = port;
+int connect_to_tcp_server(char* server_addr) {
+  int sock = socket(PF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    raise_error("unable to create socket");
+  }
+  
+  unsigned short port = 8081;
+  struct sockaddr_in server;
+  server.sin_addr.s_addr = inet_addr(server_addr);
+  server.sin_family = AF_INET;
+  server.sin_port = htons(port);
+
+  if (connect(sock, (struct sockaddr*) &server, sizeof(server)) < 0) {
+    raise_error("unable to connect to server");
+  }
+
+  return sock;
 }
