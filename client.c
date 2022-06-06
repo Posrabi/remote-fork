@@ -30,10 +30,11 @@ int main() {
   FILE* fout = fdopen(sock , "wb");
   Result res = remote_fork(fout);
   if (res.loc == Child) {
-    printf("remote forked to %d", res.pid);
-    printf("local var foo is %d", foo);
+    printf("remote forked to %d\n", res.pid);
+    printf("local var foo is %d\n", foo);
     exit(foo);
   } else {
-    printf("remote forked to %s succeed", res.pid);
+    printf("remote forked to %s succeed\n", res.pid);
   }
+  return 0;
 }
