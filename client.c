@@ -34,7 +34,7 @@ int main() {
     printf("local var foo is %d\n", foo);
     exit(foo);
   } else {
-    printf("remote forked to %s succeed\n", res.pid);
+    printf("remote forked to %d succeed\n", res.pid);
   }
   return 0;
 }

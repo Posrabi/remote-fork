@@ -21,7 +21,7 @@
 static BytesArray from_reg_info_to_bytes(RegInfo* ri);
 static RegInfo* from_bytes_to_reg_info(BytesArray* ba);
 
-static int _prot(Mapping* m);
+// static int _prot(Mapping* m);
 
 static Result const fork_frozen();
 
@@ -56,13 +56,14 @@ static procmaps_struct* find_map_named(procmaps_iterator* maps, char* name);
 
 static void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr);
 
-
-
 /* ---------- Definitions ---------- */
 
 BytesArray from_reg_info_to_bytes(RegInfo* ri) {
+  unsigned char* ptr = malloc(sizeof(RegInfo));
+  memcpy(ptr, ri, sizeof(RegInfo));
+  
   BytesArray ba = {
-    .pointer = &(ri->regs),
+    .pointer = ptr,
     .size = sizeof(ri->regs)
   };
   return ba;
@@ -79,28 +80,29 @@ RegInfo* from_bytes_to_reg_info(BytesArray* ba) {
   RegInfo* ri;
   ri = malloc(sizeof(RegInfo));
 
+  // TODO: de/serialize propery
   mempcpy(&(ri->regs), ba->pointer, ba->size);
   return ri;
 }
 
-int _prot(Mapping* m) {
-  int prot = 0;
-  if (m->readable) {
-    prot |= PROT_READ;
-  }
-  if (m->writable) {
-    prot |= PROT_WRITE;
-  }
-  if (m->executable) {
-    prot |= PROT_EXEC;
-  }
+// int _prot(Mapping* m) {
+//   int prot = 0;
+//   if (m->readable) {
+//     prot |= PROT_READ;
+//   }
+//   if (m->writable) {
+//     prot |= PROT_WRITE;
+//   }
+//   if (m->executable) {
+//     prot |= PROT_EXEC;
+//   }
 
-  return prot;
-}
+//   return prot;
+// }
 
 
 Result const remote_fork(FILE* out) {
-  ProcessState const proc_state = {.brk_address = sbrk(0)};
+  ProcessState const proc_state = {.brk_address = (__uint64_t) sbrk(0)};
   Result const fork_meta = fork_frozen();
 
   if (fork_meta.loc == Child) {
@@ -125,17 +127,20 @@ Result const fork_frozen() {
     Result const res = {.raise_result = raise_result, .loc = Child, .pid = getpid()};
 
     return res;
-  } else {
-    // Parent process. The pid here is the child' pid, not the parent which is what we want.
-    int status;
-    waitpid(pid, &status, WCONTINUED);
-
-    if WIFSTOPPED(status) {
-      Result const res = {.loc = Parent, .pid = pid};
-      return res;
-    }
-    raise_error("couldn't trace child");
   }
+  // Parent process. The pid here is the child' pid, not the parent which is what we want.
+  int status;
+  waitpid(pid, &status, WCONTINUED);
+
+  Result res;
+  if WIFSTOPPED(status) {
+    res.loc = Parent;
+    res.pid = pid;
+    return res;
+  }
+  
+  raise_error("couldn't trace child");
+  return res;
 };
 
 int const kill_if_parent_dies() {
@@ -178,7 +183,7 @@ void write_special_kernel_map(FILE* out, procmaps_struct* map) {
 
   Remap const remap_cmd = {
     .name = m_name, 
-    .addr = map->addr_start, 
+    .addr = (size_t) map->addr_start, 
     .size = map->length
   };
   Command cmd = {
@@ -217,14 +222,14 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
   __uint8_t* buf = calloc(sizeof(__uint8_t), SYS_PAGE_SIZE);
   while (remaining_size > 0) {
     off_t read_size = min(remaining_size, SYS_PAGE_SIZE);
-    off_t offset = map->addr_start + (map->length - remaining_size);
+    off_t offset = (off_t) map->addr_start + (map->length - remaining_size);
 
     struct iovec local[1];
     local[0].iov_base = buf;
     local[0].iov_len = read_size;
     
     struct iovec remote[1];
-    remote[0].iov_base = offset;
+    remote[0].iov_base = (void*) offset;
     remote[0].iov_len = read_size;
 
     ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
@@ -279,7 +284,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
   };
 
   BytesArray rb = from_reg_info_to_bytes(&ri);
-  Command cmd = {
+  Command cmd_res = {
     .type = RESUME_WITH_REGISTERS,
     .cmds = {
       .rwr = {
@@ -288,7 +293,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
     }
   };
 
-  if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
+  if (fwrite(&cmd_res, sizeof(Command), 1, out) == 0) {
     raise_error("error writing registers command");
   }
   
@@ -305,7 +310,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
 void single_step(pid_t child) {
   ptrace(PTRACE_SINGLESTEP, child);
   int status;
-  waitpid(child, &status, NULL);
+  waitpid(child, &status, 0);
 
   if (!WIFSTOPPED(status)) {
     raise_error("couldn't trace child");
@@ -313,14 +318,14 @@ void single_step(pid_t child) {
 }
 
 size_t try_to_find_syscall(pid_t child, size_t addr) {
-  int* buf = calloc(sizeof(u_int8_t), SYS_PAGE_SIZE);
+  __uint8_t * buf = calloc(sizeof(__uint8_t), SYS_PAGE_SIZE);
   
   struct iovec local[1];
   local[0].iov_base = buf;
   local[0].iov_len = SYS_PAGE_SIZE;
   
   struct iovec remote[1];
-  remote[0].iov_base = addr;
+  remote[0].iov_base = (void*) addr;
   remote[0].iov_len = SYS_PAGE_SIZE;
 
   ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
@@ -328,9 +333,9 @@ size_t try_to_find_syscall(pid_t child, size_t addr) {
     raise_error("error writing from remote process");
   }
 
-  u_int8_t syscalls[2] = {0x0f, 0x05};
+  __uint8_t syscalls[2] = {0x0f, 0x05};
   for (size_t i = 0; i < SYS_PAGE_SIZE; i += sizeof(syscalls)) {
-    if (*(buf + i) == syscalls) {
+    if (*(buf + i) == syscalls[0] && *(buf + i + sizeof(syscalls[0])) == syscalls[1]) {
       return i;
     }
   }
@@ -458,7 +463,7 @@ void stream_memory(pid_t child, FILE* in, size_t addr, size_t length) {
     local[0].iov_len = SYS_PAGE_SIZE;
 
     struct iovec remote[1];
-    remote[0].iov_base = offset;
+    remote[0].iov_base = (void*) offset;
     remote[0].iov_len = batch_size;
 
     if (process_vm_writev(child, local, 2, remote, 1, 0) == 0) {
@@ -502,15 +507,15 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
     raise_error("unable to find vdso map");
   }
   
-  size_t vsdo_syscall_offset = try_to_find_syscall(child, vdso_map->addr_start);
-  __uint64_t vdso_syscall = vdso_map->addr_start + vsdo_syscall_offset;
+  size_t vsdo_syscall_offset = try_to_find_syscall(child, (size_t) vdso_map->addr_start);
+  __uint64_t vdso_syscall = ((size_t) vdso_map->addr_start) + vsdo_syscall_offset;
   
   procmaps_struct* map_tmp = NULL;
   while ((map_tmp = pmparser_next(orig_maps)) != NULL) {
     if (is_special_kernel_map(map_tmp) || map_tmp->length == 0) {
       continue;
     }
-    remote_munmap(child, vdso_syscall, map_tmp->addr_start, map_tmp->length);
+    remote_munmap(child, vdso_syscall, (size_t) map_tmp->addr_start, map_tmp->length);
   }
 
   pmparser_free(orig_maps);
@@ -518,6 +523,7 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
   procmaps_iterator* maps = pmparser_parse(child);
   __uint8_t prot_all = PROT_READ | PROT_WRITE | PROT_EXEC;
   Command cmd;
+  bool breakLoop = false;
   for (;;) {
     if (fread(&cmd, sizeof(Command), 1, in) == 0) {
       continue;
@@ -527,7 +533,7 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
       case PROCESS_STATE:
         restore_brk(child, vdso_syscall, cmd.cmds.ps.brk_address);
 
-      case REMAP:
+      case REMAP: ;
         procmaps_struct* matching_map = find_map_named(maps, cmd.cmds.rm.name);
         if (matching_map == NULL) {
           printf("%s\n", "no matching map to remap");
@@ -542,27 +548,25 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
         remote_mremap(
           child,
           vdso_syscall,
-          matching_map->addr_start,
-          matching_map->addr_end,
+          (size_t) matching_map->addr_start,
+          (size_t) matching_map->addr_end,
           cmd.cmds.rm.addr
         );
 
         if (strcmp(cmd.cmds.rm.name, "[vdso]") == 0) {
           vdso_syscall = (__uint64_t)(cmd.cmds.rm.addr + vsdo_syscall_offset);
         }
-        break;
 
       case MAPPING:
         if (cmd.cmds.mp.addr == NULL) {
           raise_error("null string");
         }
 
-        size_t addr = remote_mmap_anon(child, vdso_syscall, cmd.cmds.mp.addr, cmd.cmds.mp.size, prot_all);
+        size_t addr = remote_mmap_anon(child, vdso_syscall, (size_t) cmd.cmds.mp.addr, cmd.cmds.mp.size, prot_all);
         stream_memory(child, in, addr, cmd.cmds.mp.size);
-        break;
 
-      case RESUME_WITH_REGISTERS:
-        char* reg_bytes = calloc(sizeof(__uint8_t), cmd.cmds.rwr.length);
+      case RESUME_WITH_REGISTERS: ;
+        unsigned char* reg_bytes = calloc(sizeof(__uint8_t), cmd.cmds.rwr.length);
         fread(reg_bytes, cmd.cmds.rwr.length, 1, in);
 
         BytesArray ba = {
@@ -579,7 +583,12 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
 
         free(reg_info);
         free(reg_bytes);
+        breakLoop = true;
         break;
+    }
+
+    if (breakLoop) {
+      break;
     }
   }
 
@@ -590,46 +599,47 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
 
 __int32_t wait_for_exit(pid_t child) {
   int status;
-  waitpid(child, &status, NULL);
+  waitpid(child, &status, 0);
   if (WIFEXITED(status)) {
     return status;
   }
   raise_error("a different wait status instead of exit");
+  return -1;
 }
 
-void yoyo(char* addr) {
-  int stream = connect_to_tcp_server(addr);
-  FILE* f_send = fdopen(dup(stream), "wb");
-  FILE* f_recv = fdopen(dup(stream), "rb");
-  Result res = remote_fork(f_send);
+// void yoyo(char* addr) {
+//   int stream = connect_to_tcp_server(addr);
+//   FILE* f_send = fdopen(dup(stream), "wb");
+//   FILE* f_recv = fdopen(dup(stream), "rb");
+//   Result res = remote_fork(f_send);
   
-  switch (res.loc) {
-    case Child:
-      FILE* child_send = fdopen(res.pid, "wb");
+//   switch (res.loc) {
+//     case Child: ;
+//       FILE* child_send = fdopen(res.pid, "wb");
 
-      // do some work here
+//       // do some work here
 
-      Result child_res = remote_fork(child_send);
-      fclose(child_send);
+//       Result child_res = remote_fork(child_send);
+//       fclose(child_send);
 
-      switch (child_res.loc) {
-        case Child:
-          return;
-        case Parent:
-          exit(0);
-      }      
-      break;
-    case Parent:
-      fclose(f_send);
-      break;
-  }
+//       switch (child_res.loc) {
+//         case Child:
+//           return;
+//         case Parent:
+//           exit(0);
+//       }      
+//       break;
+//     case Parent:
+//       fclose(f_send);
+//       break;
+//   }
 
-  pid_t child = receive_fork(f_recv, 0);
-  int status = wait_for_exit(child);
-  fclose(f_recv);
-  close(stream);
-  exit(status);
-}
+//   pid_t child = receive_fork(f_recv, 0);
+//   int status = wait_for_exit(child);
+//   fclose(f_recv);
+//   close(stream);
+//   exit(status);
+// }
 
 int raise_error(char* msg) {
   void* array[10];
@@ -646,11 +656,11 @@ int raise_error(char* msg) {
   free(strings); 
   printf("%s\n", msg);
 
-  return 1/0;
+  exit(1);
 }
 
 char* const get_map_name(procmaps_struct* map) {
-  return strrchr(map->pathname, '/');
+  return basename(map->pathname);
 }
 
 off_t min(off_t a, off_t b) {

@@ -4,12 +4,12 @@
 #include "remote_fork.h"
 
 void handle_client(int sock) {
-  print("Receiving process\n");
+  printf("Receiving process\n");
   FILE* stream = fdopen(sock, "wb");
   pid_t child = receive_fork(stream, sock); 
-  printf("received child to pid %d and passed to TCP %d", child, sock);
+  printf("received child to pid %d and passed to TCP %d\n", child, sock);
   int status = wait_for_exit(child);
-  printf("child exited with status %d", status);
+  printf("child exited with status %d\n", status);
 }
 
 int main() {
@@ -27,20 +27,20 @@ int main() {
     raise_error("error binding socket");
   }
 
-  int namelen;
+  __uint32_t namelen;
   int ns;
   struct sockaddr_in client;
-  for (;;) {
-    if (listen(s, 1) != 0) {
-      raise_error("error listening");
-    }
-    namelen = sizeof(client);
-    if ((ns = accept(s, (struct sockaddr *)&client, &namelen)) == -1) {
-      raise_error("error accepting");
-    }
-    handle_client(ns);
+  // for (;;) {
+  if (listen(s, 1) != 0) {
+    raise_error("error listening");
   }
-
+  
+  namelen = sizeof(client);
+  if ((ns = accept(s, (struct sockaddr *)&client, &namelen)) == -1) {
+    raise_error("error accepting");
+  }
+  handle_client(ns);
+  
   close(s);
   close(ns);
   return 0;

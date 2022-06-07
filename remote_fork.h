@@ -19,7 +19,7 @@ enum ForkLocation {
   Child = 2,
 };
 
-/* ---------- Structs ---------- */
+/* ---------- STRUCTS ---------- */
 
 typedef struct Result {
   enum ForkLocation loc;
@@ -38,22 +38,12 @@ enum CommandType {
   RESUME_WITH_REGISTERS = 4,
 };
 
-typedef struct Command {
-  enum CommandType type;
-  union cmds {
-    ProcessState ps;
-    Mapping mp;
-    Remap rm;
-    ResumeWithRegisters rwr;
-  } cmds;
-} Command;
-
 typedef struct Mapping {
   char* name;
   bool readable;
   bool writable;
   bool executable;
-  size_t addr;
+  void* addr;
   off_t size;
 } Mapping;
 
@@ -67,6 +57,15 @@ typedef struct ResumeWithRegisters {
   size_t length;
 } ResumeWithRegisters;
 
+typedef struct Command {
+  enum CommandType type;
+  union cmds {
+    ProcessState ps;
+    Mapping mp;
+    Remap rm;
+    ResumeWithRegisters rwr;
+  } cmds;
+} Command;
 
 typedef struct RegInfo {
   struct user_regs_struct regs;
@@ -78,7 +77,7 @@ typedef struct BytesArray {
   size_t size;
 } BytesArray;
 
-/* ---------- Main functions ---------- */
+/* ---------- MAIN FUNCTIONS ---------- */
 
 Result const remote_fork(FILE* out);
 
@@ -86,12 +85,12 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child);
 
 __int32_t wait_for_exit(pid_t child);
 
-/*All in one*/
-void yoyo(char* addr);
+// /*All in one*/
+// void yoyo(char* addr);
 
 /* ---------- UTILS ---------- */
 
 /*A hacky way to throw an error and stops the entire program.*/
-int raise_error(char* msg);
+extern int raise_error(char* msg);
 
 #endif // REMOTE_FORK_H
