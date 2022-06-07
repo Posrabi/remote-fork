@@ -110,8 +110,8 @@ Result const remote_fork(FILE* out) {
     return fork_meta;
   }
 
-  int status;
-  printf("current child (pid %d) status after fork_frozen: %d\n", fork_meta.pid, waitpid(fork_meta.pid, &status, WNOHANG));
+  // int status;
+  //printf("current child (pid %d) status after fork_frozen: %d\n", fork_meta.pid, waitpid(fork_meta.pid, &status, WNOHANG));
   write_state(out, fork_meta.pid, proc_state);
   kill(fork_meta.pid, SIGKILL);
   // Only the parent retuns
@@ -204,6 +204,7 @@ void write_special_kernel_map(FILE* out, procmaps_struct* map) {
   if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
     raise_error("unable to write special kernel map");
   };
+  fflush(out);
 }
 
 void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
@@ -227,7 +228,7 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
   }
 
   off_t remaining_size = map->length;
-  __uint8_t* buf = calloc(sizeof(__uint8_t), SYS_PAGE_SIZE);
+  char* buf = calloc(SYS_PAGE_SIZE, sizeof(char));
   while (remaining_size > 0) {
     off_t read_size = min(remaining_size, SYS_PAGE_SIZE);
     off_t offset = (off_t) map->addr_start + (map->length - remaining_size);
@@ -240,16 +241,18 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
     remote[0].iov_base = (void*) offset;
     remote[0].iov_len = read_size;
 
-    ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
+    ssize_t wrote = process_vm_readv(child, local, 1, remote, 1, 0);
     if (wrote == 0) {
       raise_error("failed to read from other process");
     }
 
     if (fwrite(buf, SYS_PAGE_SIZE, 1, out) == 0) {
+      printf("%s\n", buf);
       raise_error("failed writing regular map");
     }
     remaining_size -= read_size;
   }
+  fflush(out);
 
   free(buf);
 }
@@ -265,7 +268,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
     raise_error("error writing process state");
   }
 
-  printf("current child (pid %d) status after fork_frozen: %d\n", child, waitpid(child, NULL, WNOHANG));
+  //printf("current child (pid %d) status after fork_frozen: %d\n", child, waitpid(child, NULL, WNOHANG));
 
   procmaps_iterator* maps = pmparser_parse(child);
   if (maps == NULL) {
@@ -279,12 +282,15 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
       continue;
     }
 
+    // printf("writing map %s \n", get_map_name(map_tmp));
+
     if (is_special_kernel_map(map_tmp) && !forced_transfer_kernel_map(map_tmp)) {
       write_special_kernel_map(out, map_tmp);
     } else {
       write_regular_map(out, child, map_tmp);
     }
   }
+  fflush(out);
   pmparser_free(maps);
 
   struct user_regs_struct regs;
@@ -311,6 +317,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
   if (fwrite(&rb, sizeof(RegInfo), 1, out) == 0) {
     raise_error("error writing registers");
   }
+  fflush(out);
   free(rb.pointer);
 }
 
@@ -330,7 +337,7 @@ void single_step(pid_t child) {
 }
 
 size_t try_to_find_syscall(pid_t child, size_t addr) {
-  __uint8_t * buf = calloc(sizeof(__uint8_t), SYS_PAGE_SIZE);
+  __uint8_t * buf = calloc(SYS_PAGE_SIZE, sizeof(__uint8_t));
   
   struct iovec local[1];
   local[0].iov_base = buf;
@@ -340,14 +347,14 @@ size_t try_to_find_syscall(pid_t child, size_t addr) {
   remote[0].iov_base = (void*) addr;
   remote[0].iov_len = SYS_PAGE_SIZE;
 
-  ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
+  ssize_t wrote = process_vm_readv(child, local, 1, remote, 1, 0);
   if (wrote == 0) {
     raise_error("error writing from remote process");
   }
 
   __uint8_t syscalls[2] = {0x0f, 0x05};
-  for (size_t i = 0; i < SYS_PAGE_SIZE; i += sizeof(syscalls)) {
-    if (*(buf + i) == syscalls[0] && *(buf + i + sizeof(syscalls[0])) == syscalls[1]) {
+  for (size_t i = 0; i < SYS_PAGE_SIZE; i ++) {
+    if (*(buf + i) == syscalls[0] && *(buf + i + 1) == syscalls[1]) {
       return i;
     }
   }
@@ -463,7 +470,7 @@ void remote_mremap(pid_t child, __uint64_t sysCall, size_t addr, size_t length, 
 
 void stream_memory(pid_t child, FILE* in, size_t addr, size_t length) {
   off_t remaining_size = length;
-  __uint8_t* buf = calloc(sizeof(__uint8_t), SYS_PAGE_SIZE);
+  char* buf = calloc(SYS_PAGE_SIZE, sizeof(char));
   while (remaining_size > 0) {
     off_t batch_size = min(SYS_PAGE_SIZE, remaining_size);
     off_t offset = addr + (length - remaining_size);
@@ -478,7 +485,7 @@ void stream_memory(pid_t child, FILE* in, size_t addr, size_t length) {
     remote[0].iov_base = (void*) offset;
     remote[0].iov_len = batch_size;
 
-    if (process_vm_writev(child, local, 2, remote, 1, 0) == 0) {
+    if (process_vm_writev(child, local, 1, remote, 1, 0) == 0) {
       raise_error("failed to write to process");
     }
     remaining_size -= batch_size;
@@ -585,7 +592,7 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
         stream_memory(child, in, addr, cmd.cmds.mp.size);
 
       case RESUME_WITH_REGISTERS: ;
-        unsigned char* reg_bytes = calloc(sizeof(__uint8_t), cmd.cmds.rwr.length);
+        unsigned char* reg_bytes = calloc(cmd.cmds.rwr.length, sizeof(__uint8_t));
         fread(reg_bytes, cmd.cmds.rwr.length, 1, in);
 
         BytesArray ba = {

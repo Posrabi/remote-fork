@@ -5,7 +5,7 @@
 
 void handle_client(int sock) {
   printf("Receiving process\n");
-  FILE* stream = fdopen(sock, "wb");
+  FILE* stream = fdopen(sock, "rb");
   if (stream == NULL) {
     raise_error("unable to open stream with fdopen()");
   }
@@ -14,6 +14,7 @@ void handle_client(int sock) {
   printf("received child to pid %d and passed to TCP %d\n", child, sock);
   int status = wait_for_exit(child);
   printf("child exited with status %d\n", status);
+  fclose(stream);
 }
 
 int main() {
