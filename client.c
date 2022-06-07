@@ -24,17 +24,21 @@ int connect_to_tcp_server(char* server_addr) {
 
 int main() {
   int foo = 103;
-  printf("foo is %d", foo);
+  printf("foo is %d\n", foo);
 
   int sock = connect_to_tcp_server("127.0.0.1");
   FILE* fout = fdopen(sock , "wb");
+  if (fout == NULL) {
+    raise_error("unable to open stream with fdopen()");
+  }
+
   Result res = remote_fork(fout);
   if (res.loc == Child) {
-    printf("remote forked to %d\n", res.pid);
+    printf("remote forked to %d\n", res.raise_result);
     printf("local var foo is %d\n", foo);
     exit(foo);
   } else {
-    printf("remote forked to %d succeed\n", res.pid);
+    printf("remote forked to %d succeeded\n", res.pid);
   }
   return 0;
 }

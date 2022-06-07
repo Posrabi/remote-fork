@@ -6,6 +6,10 @@
 void handle_client(int sock) {
   printf("Receiving process\n");
   FILE* stream = fdopen(sock, "wb");
+  if (stream == NULL) {
+    raise_error("unable to open stream with fdopen()");
+  }
+  
   pid_t child = receive_fork(stream, sock); 
   printf("received child to pid %d and passed to TCP %d\n", child, sock);
   int status = wait_for_exit(child);

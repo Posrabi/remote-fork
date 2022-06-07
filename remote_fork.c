@@ -106,11 +106,14 @@ Result const remote_fork(FILE* out) {
   Result const fork_meta = fork_frozen();
 
   if (fork_meta.loc == Child) {
-    // Write state over to child and then kill it
-    write_state(out, fork_meta.pid, proc_state);
-    kill(fork_meta.pid, SIGKILL);
+    printf("child in remote_fork returns\n");
+    return fork_meta;
   }
-  
+
+  int status;
+  printf("current child (pid %d) status after fork_frozen: %d\n", fork_meta.pid, waitpid(fork_meta.pid, &status, WNOHANG));
+  write_state(out, fork_meta.pid, proc_state);
+  kill(fork_meta.pid, SIGKILL);
   // Only the parent retuns
   return fork_meta;
 };
@@ -124,17 +127,22 @@ Result const fork_frozen() {
     ptrace(PTRACE_TRACEME);
     // Stop the process for now. We will rehydrate from this point.
     int const raise_result = raise(SIGSTOP);
-    Result const res = {.raise_result = raise_result, .loc = Child, .pid = getpid()};
+
+    printf("process rehydrated\n");
+    Result const res = {.raise_result = raise_result, .loc = Child};
 
     return res;
   }
   // Parent process. The pid here is the child' pid, not the parent which is what we want.
   int status;
-  waitpid(pid, &status, WCONTINUED);
+  waitpid(pid, &status, 0);
 
-  Result res;
+  Result res = {
+    .loc = Parent
+  };
+
   if WIFSTOPPED(status) {
-    res.loc = Parent;
+    //printf("child process stopped\n");
     res.pid = pid;
     return res;
   }
@@ -257,8 +265,11 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
     raise_error("error writing process state");
   }
 
+  printf("current child (pid %d) status after fork_frozen: %d\n", child, waitpid(child, NULL, WNOHANG));
+
   procmaps_iterator* maps = pmparser_parse(child);
   if (maps == NULL) {
+    printf("%d\n", child);
     raise_error("error getting proc maps");
   }
 
@@ -300,6 +311,7 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
   if (fwrite(&rb, sizeof(RegInfo), 1, out) == 0) {
     raise_error("error writing registers");
   }
+  free(rb.pointer);
 }
 
 // void print_maps_info(procmaps_struct* map) {
@@ -499,9 +511,16 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
   if (childRes.loc == Child) {
     raise_error("rehydrate failed");
   }
+  
+  // printf("%d\n", childRes.loc);
   pid_t child = childRes.pid;
 
   procmaps_iterator* orig_maps = pmparser_parse(child);
+  if (orig_maps == NULL) {
+    printf("%d\n", child);
+    raise_error("failed to parse proc_map");
+  }
+
   procmaps_struct* vdso_map = find_map_named(orig_maps, "[vdso]");
   if (vdso_map == NULL) {
     raise_error("unable to find vdso map");
