@@ -18,9 +18,6 @@
 
 /* ---------- Static functions declarations ---------- */
 
-static BytesArray from_reg_info_to_bytes(RegInfo* ri);
-static RegInfo* from_bytes_to_reg_info(BytesArray* ba);
-
 // static int _prot(Mapping* m);
 
 static Result const fork_frozen();
@@ -58,33 +55,6 @@ static void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr);
 
 /* ---------- Definitions ---------- */
 
-BytesArray from_reg_info_to_bytes(RegInfo* ri) {
-  unsigned char* ptr = malloc(sizeof(RegInfo));
-  memcpy(ptr, ri, sizeof(RegInfo));
-  
-  BytesArray ba = {
-    .pointer = ptr,
-    .size = sizeof(ri->regs)
-  };
-  return ba;
-}
-
-RegInfo* from_bytes_to_reg_info(BytesArray* ba) {
-  if (ba->size < sizeof(struct user_regs_struct)) {
-    return NULL;
-  }
-  
-  // if ((*(ba->pointer)) % ba->size != 0) {
-  //   return NULL;
-  // }
-  RegInfo* ri;
-  ri = malloc(sizeof(RegInfo));
-
-  // TODO: de/serialize propery
-  mempcpy(&(ri->regs), ba->pointer, ba->size);
-  return ri;
-}
-
 // int _prot(Mapping* m) {
 //   int prot = 0;
 //   if (m->readable) {
@@ -106,8 +76,8 @@ Result const remote_fork(FILE* out) {
   Result const fork_meta = fork_frozen();
 
   if (fork_meta.loc == Child) {
-    printf("child in remote_fork returns\n");
-    return fork_meta;
+	  printf("child in remote_fork returns\n");
+	  return fork_meta;
   }
 
   // int status;
@@ -138,11 +108,10 @@ Result const fork_frozen() {
   waitpid(pid, &status, 0);
 
   Result res = {
-    .loc = Parent
+	  .loc = Parent
   };
 
   if WIFSTOPPED(status) {
-    //printf("child process stopped\n");
     res.pid = pid;
     return res;
   }
@@ -158,42 +127,44 @@ int const kill_if_parent_dies() {
 // Remapping these are just too difficult.
 bool const is_special_kernel_map(procmaps_struct* map) {
   char* const file_name = get_map_name(map);
-  if (strcmp(file_name, "vdso") != 0 && strcmp(file_name, "vsyscall") != 0 && strcmp(file_name, "[vvar]") != 0 )  {
-    return false;
+  if (strcmp(file_name, "[vdso]") != 0 && strcmp(file_name, "[vsyscall]") != 0 && strcmp(file_name, "[vvar]") != 0 )  {
+	  return false;
   }
   return true;
 }
 
 bool const forced_transfer_kernel_map(procmaps_struct* map) {
   if (!FORCED_VDSO_TRANSFER) {
-    return false;
+	return false;
   }
 
   char* const file_name = get_map_name(map);
-  if (strcmp(file_name, "vdso") == 0) {
-    return true;
+  if (strcmp(file_name, "[vdso]") == 0) {
+	  return true;
   }
   return false;
 }
 
 bool const should_skip_map(procmaps_struct* map) {
   if (!map->is_r || map->length == 0) {
-    return true;
+	  return true;
   }
   return false;
 }
 
 void write_special_kernel_map(FILE* out, procmaps_struct* map) {
   char* const m_name = get_map_name(map);
-  if (m_name == NULL) {
-    raise_error("a kernel map must have a name");
+  if (m_name == (void*)0) {
+	  raise_error("a kernel map must have a name");
   }
 
   Remap const remap_cmd = {
-    .name = m_name, 
     .addr = (size_t) map->addr_start, 
     .size = map->length
   };
+  strcpy(remap_cmd.name, m_name);
+
+
   Command cmd = {
     .type = REMAP,
     .cmds = {
@@ -202,20 +173,25 @@ void write_special_kernel_map(FILE* out, procmaps_struct* map) {
   };
 
   if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
-    raise_error("unable to write special kernel map");
+	  raise_error("unable to write special kernel map");
   };
-  fflush(out);
 }
 
 void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
+  char* const m_name = get_map_name(map);
+  if (m_name == (void*)0) {
+	  raise_error("a kernel map must have a name");
+  }
+
   Mapping const mapping = {
-    .name = get_map_name(map),
     .readable = map->is_r,
     .writable = map->is_r,
     .executable = map->is_x,
     .addr = map->addr_start,
     .size = map->length,
   };
+  strcpy(mapping.name, m_name);
+
   Command cmd = {
     .type = MAPPING,
     .cmds = {
@@ -224,33 +200,35 @@ void write_regular_map(FILE* out, pid_t child, procmaps_struct* map) {
   };
 
   if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
-    raise_error("unable to write regular map");
+	raise_error("unable to write regular map");
   }
 
   off_t remaining_size = map->length;
   char* buf = calloc(SYS_PAGE_SIZE, sizeof(char));
   while (remaining_size > 0) {
-    off_t read_size = min(remaining_size, SYS_PAGE_SIZE);
-    off_t offset = (off_t) map->addr_start + (map->length - remaining_size);
+	off_t read_size = min(remaining_size, SYS_PAGE_SIZE);
+	off_t offset = (off_t) map->addr_start + (map->length - remaining_size);
 
-    struct iovec local[1];
-    local[0].iov_base = buf;
-    local[0].iov_len = read_size;
-    
-    struct iovec remote[1];
-    remote[0].iov_base = (void*) offset;
-    remote[0].iov_len = read_size;
+	struct iovec local[1];
+	local[0].iov_base = buf;
+	local[0].iov_len = read_size;
+	
+	struct iovec remote[1];
+	remote[0].iov_base = (void*) offset;
+	remote[0].iov_len = read_size;
 
-    ssize_t wrote = process_vm_readv(child, local, 1, remote, 1, 0);
-    if (wrote == 0) {
-      raise_error("failed to read from other process");
-    }
+	ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
+	if (wrote == 0) {
+	  raise_error("failed to read from other process");
+	}
 
-    if (fwrite(buf, SYS_PAGE_SIZE, 1, out) == 0) {
-      printf("%s\n", buf);
-      raise_error("failed writing regular map");
-    }
-    remaining_size -= read_size;
+
+	if (fwrite(buf, read_size, 1, out) != 1) {
+	  if (ferror(out) != 0) {
+		raise_error("failed writing regular map");
+	  }
+	}
+	remaining_size -= read_size;
   }
   fflush(out);
 
@@ -264,61 +242,50 @@ void write_state(FILE* out, pid_t child, ProcessState proc_state) {
       .ps = proc_state,
     }
   };
+
   if (fwrite(&cmd, sizeof(Command), 1, out) == 0) {
-    raise_error("error writing process state");
+	  raise_error("error writing process state");
   }
 
-  //printf("current child (pid %d) status after fork_frozen: %d\n", child, waitpid(child, NULL, WNOHANG));
+  //printf("current child (pid %d) status after fork_frozen: %d\n", child, waitpid(child, (void*)0, WNOHANG));
 
   procmaps_iterator* maps = pmparser_parse(child);
-  if (maps == NULL) {
-    printf("%d\n", child);
-    raise_error("error getting proc maps");
+  if (maps == (void*)0) {
+	// printf("%d\n", child);
+	  raise_error("error getting proc maps");
   }
 
-  procmaps_struct* map_tmp = NULL;
-  while ((map_tmp = pmparser_next(maps)) != NULL) {
+  procmaps_struct* map_tmp = (void*)0;
+  while ((map_tmp = pmparser_next(maps)) != (void*)0) {
     if (should_skip_map(map_tmp)) {
       continue;
     }
 
-    // printf("writing map %s \n", get_map_name(map_tmp));
-
-    if (is_special_kernel_map(map_tmp) && !forced_transfer_kernel_map(map_tmp)) {
+	  if (is_special_kernel_map(map_tmp) && !forced_transfer_kernel_map(map_tmp)) {
       write_special_kernel_map(out, map_tmp);
     } else {
       write_regular_map(out, child, map_tmp);
     }
   }
+  
   fflush(out);
-  pmparser_free(maps);
+  // pmparser_free(maps);
 
   struct user_regs_struct regs;
-  ptrace(PTRACE_GETREGS, child, NULL, &regs);
+  ptrace(PTRACE_GETREGS, child, (void*)0, &regs);
 
-  RegInfo ri = {
-    .regs = regs
-  };
-
-  BytesArray rb = from_reg_info_to_bytes(&ri);
   Command cmd_res = {
     .type = RESUME_WITH_REGISTERS,
     .cmds = {
       .rwr = {
-        .length = sizeof(struct user_regs_struct),
+        .user = regs,
       }
     }
   };
 
   if (fwrite(&cmd_res, sizeof(Command), 1, out) == 0) {
-    raise_error("error writing registers command");
+	  raise_error("error writing registers command");
   }
-  
-  if (fwrite(&rb, sizeof(RegInfo), 1, out) == 0) {
-    raise_error("error writing registers");
-  }
-  fflush(out);
-  free(rb.pointer);
 }
 
 // void print_maps_info(procmaps_struct* map) {
@@ -332,12 +299,12 @@ void single_step(pid_t child) {
   waitpid(child, &status, 0);
 
   if (!WIFSTOPPED(status)) {
-    raise_error("couldn't trace child");
+	  raise_error("couldn't trace child");
   }
 }
 
 size_t try_to_find_syscall(pid_t child, size_t addr) {
-  __uint8_t * buf = calloc(SYS_PAGE_SIZE, sizeof(__uint8_t));
+  char* buf = calloc(SYS_PAGE_SIZE, sizeof(char)); // 4096 bytes
   
   struct iovec local[1];
   local[0].iov_base = buf;
@@ -347,18 +314,19 @@ size_t try_to_find_syscall(pid_t child, size_t addr) {
   remote[0].iov_base = (void*) addr;
   remote[0].iov_len = SYS_PAGE_SIZE;
 
-  ssize_t wrote = process_vm_readv(child, local, 1, remote, 1, 0);
+  ssize_t wrote = process_vm_readv(child, local, 2, remote, 1, 0);
   if (wrote == 0) {
-    raise_error("error writing from remote process");
+	  raise_error("error writing from remote process");
   }
 
-  __uint8_t syscalls[2] = {0x0f, 0x05};
-  for (size_t i = 0; i < SYS_PAGE_SIZE; i ++) {
-    if (*(buf + i) == syscalls[0] && *(buf + i + 1) == syscalls[1]) {
+  __uint64_t syscalls[] = {0x0f, 0x05};
+  for (size_t i = 0; i < SYS_PAGE_SIZE - 1; i ++) {
+    if (buf[i] == syscalls[0] && buf[i+1] == syscalls[1]) {
       return i;
     }
   }
 
+  free(buf);
   return raise_error("couldn't find syscall");
 }
 
@@ -385,15 +353,14 @@ size_t remote_brk(pid_t child, __uint64_t sysCall, size_t brk) {
 
 size_t remote_mmap_anon(pid_t child, __uint64_t sysCall, size_t addr, size_t length, int32_t prot) {
   if (length % SYS_PAGE_SIZE != 0) {
-    raise_error("mmap length must be multiple of page size");
+	raise_error("mmap length must be multiple of page size");
   }
 
   struct user_regs_struct mmap_regs;
   ptrace(PTRACE_GETREGS, child, 0, &mmap_regs);
   __uint8_t flags = MAP_PRIVATE | MAP_ANONYMOUS;
-  if (addr != 0) {
-    flags |= MAP_FIXED;
-  }
+  if (addr != 0)
+	  flags |= MAP_FIXED;
 
   mmap_regs.rip = sysCall;
   mmap_regs.rax = 9;
@@ -411,11 +378,11 @@ size_t remote_mmap_anon(pid_t child, __uint64_t sysCall, size_t addr, size_t len
   ptrace(PTRACE_GETREGS, child, 0, &regs);
   __int64_t mmap_location = (__int64_t) regs.rax;
   if (mmap_location == -1) {
-    raise_error("mmap syscall exited with -1");
+	raise_error("mmap syscall exited with -1");
   }
 
   if (addr != 0 && (size_t) mmap_location != addr) {
-    raise_error("failed to map at correct location");
+	raise_error("failed to map at correct location");
   }
   return (__uint64_t) mmap_location;
 }
@@ -435,13 +402,13 @@ void remote_munmap(pid_t child, __uint64_t sysCall, size_t addr, size_t length) 
   struct user_regs_struct new_regs;
   ptrace(PTRACE_GETREGS, child, 0, &new_regs);
   if (new_regs.rax != 0) {
-    raise_error("failed to munmap");
+	  raise_error("failed to munmap");
   }
 }
 
 void remote_mremap(pid_t child, __uint64_t sysCall, size_t addr, size_t length, size_t new_addr) {
   if (addr == new_addr) {
-    return;
+	  return;
   }
 
   struct user_regs_struct syscall_regs;
@@ -460,11 +427,14 @@ void remote_mremap(pid_t child, __uint64_t sysCall, size_t addr, size_t length, 
 
   struct user_regs_struct new_regs;
   ptrace(PTRACE_GETREGS, child, 0, &new_regs);
+
   if ((__int64_t) new_regs.rax == -1) {
-    raise_error("failed to mremap");
+	  raise_error("failed to mremap");
   }
+
   if ((size_t) new_regs.rax != new_addr) {
-    raise_error("didn't mremap to correct location");
+    printf("%lu != %lu, remapped from %lu, length: %lu\n", (size_t) new_regs.rax, new_addr, addr, length);
+	  raise_error("didn't mremap to correct location");
   }
 }
 
@@ -485,7 +455,7 @@ void stream_memory(pid_t child, FILE* in, size_t addr, size_t length) {
     remote[0].iov_base = (void*) offset;
     remote[0].iov_len = batch_size;
 
-    if (process_vm_writev(child, local, 1, remote, 1, 0) == 0) {
+    if (process_vm_writev(child, local, 2, remote, 1, 0) == 0) {
       raise_error("failed to write to process");
     }
     remaining_size -= batch_size;
@@ -495,13 +465,13 @@ void stream_memory(pid_t child, FILE* in, size_t addr, size_t length) {
 }
 
 procmaps_struct* find_map_named(procmaps_iterator* maps, char* name) {
-  procmaps_struct* map_tmp = NULL;
-  while ((map_tmp = pmparser_next(maps)) != NULL) {
-    if (strcmp(get_map_name(map_tmp), name)) {
-      return map_tmp;
-    }
+  procmaps_struct* map_tmp = (void*)0;
+  while ((map_tmp = pmparser_next(maps)) != (void*)0) {
+	if (strcmp(get_map_name(map_tmp), name) == 0) {
+	  return map_tmp;
+	}
   }
-  return NULL;
+  return (void*)0;
 }
 
 void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr) {
@@ -509,44 +479,47 @@ void restore_brk(pid_t child, __uint64_t sysCall, size_t brk_addr) {
   size_t new_brk = remote_brk(child, sysCall, brk_addr);
 
   if (new_brk > orig_brk) {
-    remote_munmap(child, sysCall, orig_brk, new_brk - orig_brk);
+	remote_munmap(child, sysCall, orig_brk, new_brk - orig_brk);
   }
 }
 
 pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
-  Result childRes = fork_frozen();
-  if (childRes.loc == Child) {
-    raise_error("rehydrate failed");
+  Result child_res = fork_frozen();
+  if (child_res.loc == Child) {
+	  raise_error("rehydrate failed"); // if it somehow gets to here, it means the rehydration to the client has failed. 
+    // Everything related to the child process created by the server should already be deleted by now.
   }
-  
-  // printf("%d\n", childRes.loc);
-  pid_t child = childRes.pid;
+
+  pid_t child = child_res.pid;
 
   procmaps_iterator* orig_maps = pmparser_parse(child);
-  if (orig_maps == NULL) {
-    printf("%d\n", child);
-    raise_error("failed to parse proc_map");
+  if (orig_maps == (void*)0) {
+	  raise_error("failed to parse proc_map");
   }
 
   procmaps_struct* vdso_map = find_map_named(orig_maps, "[vdso]");
-  if (vdso_map == NULL) {
-    raise_error("unable to find vdso map");
+  if (vdso_map == (void*)0) {
+	  raise_error("unable to find vdso map");
   }
   
   size_t vsdo_syscall_offset = try_to_find_syscall(child, (size_t) vdso_map->addr_start);
   __uint64_t vdso_syscall = ((size_t) vdso_map->addr_start) + vsdo_syscall_offset;
-  
-  procmaps_struct* map_tmp = NULL;
-  while ((map_tmp = pmparser_next(orig_maps)) != NULL) {
+
+  procmaps_struct* map_tmp = (void*)0;
+  while ((map_tmp = pmparser_next(orig_maps)) != (void*)0) {
     if (is_special_kernel_map(map_tmp) || map_tmp->length == 0) {
       continue;
     }
-    remote_munmap(child, vdso_syscall, (size_t) map_tmp->addr_start, map_tmp->length);
+	  remote_munmap(child, vdso_syscall, (size_t) map_tmp->addr_start, map_tmp->length);
   }
 
   pmparser_free(orig_maps);
 
   procmaps_iterator* maps = pmparser_parse(child);
+  if (maps == (void*)0) {
+	 raise_error("failed to parse proc_map");
+  }
+
   __uint8_t prot_all = PROT_READ | PROT_WRITE | PROT_EXEC;
   Command cmd;
   bool breakLoop = false;
@@ -555,18 +528,21 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
       continue;
     }
 
+    printf("%d\n", cmd.type);
+
     switch (cmd.type) {
       case PROCESS_STATE:
         restore_brk(child, vdso_syscall, cmd.cmds.ps.brk_address);
 
+        break;
+
       case REMAP: ;
         procmaps_struct* matching_map = find_map_named(maps, cmd.cmds.rm.name);
-        if (matching_map == NULL) {
+        if (matching_map == (void*)0) {
           printf("%s\n", "no matching map to remap");
           continue;
         }
         
-
         if (cmd.cmds.rm.size != matching_map->length) {
           printf("%s\n", "size mismatch in remap");
         }
@@ -575,7 +551,7 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
           child,
           vdso_syscall,
           (size_t) matching_map->addr_start,
-          (size_t) matching_map->addr_end,
+          (size_t) matching_map->length,
           cmd.cmds.rm.addr
         );
 
@@ -583,33 +559,26 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
           vdso_syscall = (__uint64_t)(cmd.cmds.rm.addr + vsdo_syscall_offset);
         }
 
+        break;
+
       case MAPPING:
-        if (cmd.cmds.mp.addr == NULL) {
-          raise_error("null string");
+        if (cmd.cmds.mp.addr == (void*)0) {
+          raise_error("(void*)0 string");
         }
 
         size_t addr = remote_mmap_anon(child, vdso_syscall, (size_t) cmd.cmds.mp.addr, cmd.cmds.mp.size, prot_all);
         stream_memory(child, in, addr, cmd.cmds.mp.size);
+        
+        break;
 
       case RESUME_WITH_REGISTERS: ;
-        unsigned char* reg_bytes = calloc(cmd.cmds.rwr.length, sizeof(__uint8_t));
-        fread(reg_bytes, cmd.cmds.rwr.length, 1, in);
+        struct user_regs_struct regs = cmd.cmds.rwr.user;
 
-        BytesArray ba = {
-          .pointer = reg_bytes,
-          .size = cmd.cmds.rwr.length
-        };
-        RegInfo* reg_info = from_bytes_to_reg_info(&ba);
-        if (reg_info == NULL) {
-          raise_error("unable to deserialize reg_info");
-        }
+        regs.rax = (__uint64_t) pass_to_child; // resume from the raise(SIGSTOP) call that checks for a compatible rax.
+        ptrace(PTRACE_SETREGS, child, 0, &regs);
 
-        reg_info->regs.rax = (__uint64_t) pass_to_child;
-        ptrace(PTRACE_SETREGS, child, 0, &(reg_info->regs));
-
-        free(reg_info);
-        free(reg_bytes);
         breakLoop = true;
+        
         break;
     }
 
@@ -619,7 +588,7 @@ pid_t receive_fork(FILE* in, __int32_t pass_to_child) {
   }
 
   pmparser_free(maps);
-  ptrace(PTRACE_DETACH, child, 0, 0);
+  ptrace(PTRACE_DETACH, child, 0, 0); // stop tracing and restart executing.
   return child;
 }
 
@@ -627,8 +596,9 @@ __int32_t wait_for_exit(pid_t child) {
   int status;
   waitpid(child, &status, 0);
   if (WIFEXITED(status)) {
-    return status;
+	  return status;
   }
+  printf("got status: %d\n", status);
   raise_error("a different wait status instead of exit");
   return -1;
 }
@@ -674,14 +644,13 @@ int raise_error(char* msg) {
 
   size = backtrace(array, 10); // get stack trace
   strings = backtrace_symbols(array, size); // get functions names from stack trace
-  if (strings != NULL) {
-    for (size_t i = 0; i < size; i++)
-      printf("%s\n", strings[i]);
+  if (strings != (void*)0) {
+	for (size_t i = 0; i < size; i++)
+	  printf("%s\n", strings[i]);
   }
 
   free(strings); 
-  printf("%s\n", msg);
-
+  printf("%s\n%s\n", msg, strerror(errno));
   exit(1);
 }
 
@@ -691,7 +660,7 @@ char* const get_map_name(procmaps_struct* map) {
 
 off_t min(off_t a, off_t b) {
   if (a > b) {
-    return b;
+	return b;
   }
   return a;
 }

@@ -39,22 +39,22 @@ enum CommandType {
 };
 
 typedef struct Mapping {
-  char* name;
+  char name[20];
   bool readable;
   bool writable;
   bool executable;
   void* addr;
-  off_t size;
+  size_t size;
 } Mapping;
 
 typedef struct Remap {
-  char* name;
+  char name[20];
   size_t addr;
-  off_t size;
+  size_t size;
 } Remap;
 
 typedef struct ResumeWithRegisters {
-  size_t length;
+  struct user_regs_struct user;
 } ResumeWithRegisters;
 
 typedef struct Command {
@@ -66,16 +66,6 @@ typedef struct Command {
     ResumeWithRegisters rwr;
   } cmds;
 } Command;
-
-typedef struct RegInfo {
-  struct user_regs_struct regs;
-} RegInfo;
-
-
-typedef struct BytesArray {
-  unsigned char* pointer;
-  size_t size;
-} BytesArray;
 
 /* ---------- MAIN FUNCTIONS ---------- */
 

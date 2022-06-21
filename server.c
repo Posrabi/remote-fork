@@ -6,7 +6,7 @@
 void handle_client(int sock) {
   printf("Receiving process\n");
   FILE* stream = fdopen(sock, "rb");
-  if (stream == NULL) {
+  if (stream == (void*)0) {
     raise_error("unable to open stream with fdopen()");
   }
   
@@ -35,7 +35,6 @@ int main() {
   __uint32_t namelen;
   int ns;
   struct sockaddr_in client;
-  // for (;;) {
   if (listen(s, 1) != 0) {
     raise_error("error listening");
   }
